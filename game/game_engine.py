@@ -14,8 +14,8 @@ DARK_OVER  = (20,  20,  20, 180)  # semi-transparent overlay colour
 # Difficulty presets: (gravity, jump_strength, player_speed)
 DIFFICULTIES = {
     "Easy":   (0.4, -14, 5),
-    "Medium": (0.6, -12, 4),
-    "Hard":   (0.9, -11, 3),
+    "Medium": (0.55, -12, 4),
+    "Hard":   (0.75, -11, 3),
 }
 
 # ── Sound helpers ────────────────────────────────────────────────────────────
@@ -161,16 +161,17 @@ class GameEngine:
             Platform(420, ground_y - 60,   120),
             Platform(600, ground_y,        180),
         ]
-        # Three small hazards spread across the level.
-        # Each is 22 px wide — narrow enough to jump over cleanly.
-        # - First one sits near the right end of the 2nd ground platform
-        # - Second one is on the elevated platform in the middle
-        # - Third one is near the centre of the last ground platform
-        self.hazards = [
-            Hazard(320, ground_y - 14,      22),   # 2nd platform, right side
-            Hazard(455, ground_y - 60 - 14, 22),   # elevated platform, left side
-            Hazard(670, ground_y - 14,      22),   # last platform, centre
+        # Hazard count scales with difficulty.
+        # Easy:   1 small hazard — on the last platform only, easy to dodge
+        # Medium: 2 hazards — last platform + elevated platform
+        # Hard:   3 hazards — all three platforms have one
+        all_hazards = [
+            Hazard(670, ground_y - 14,         22),   # last ground platform
+            Hazard(455, ground_y - 60 - 14,    22),   # elevated middle platform
+            Hazard(320, ground_y - 14,         22),   # second ground platform
         ]
+        counts = {"Easy": 1, "Medium": 2, "Hard": 3}
+        self.hazards = all_hazards[: counts[self.difficulty]]
         self.goal_x   = 740
         self.score    = 0
 

@@ -13,9 +13,11 @@ class Player:
         self.on_ground = False
 
     def rect(self):
-        return pygame.Rect(self.x, self.y, self.width, self.height)
+        return pygame.Rect(int(self.x), int(self.y), self.width, self.height)
 
     def jump(self):
         if self.on_ground:
             self.vy = self.jump_strength
             self.on_ground = False
+            return True  # signal that a jump happened
+        return False

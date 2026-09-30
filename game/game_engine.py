@@ -1,5 +1,6 @@
 import pygame
 import math
+import threading
 from .player import Player
 from .platform import Platform
 from .hazard import Hazard
@@ -12,101 +13,80 @@ GREEN      = (0,   200, 0)
 DARK_OVER  = (20,  20,  20, 180)  # semi-transparent overlay colour
 
 # Difficulty presets: (gravity, jump_strength, player_speed)
+# Hard uses the same gravity/jump as Medium — only hazard count differs.
 DIFFICULTIES = {
-    "Easy":   (0.4, -14, 5),
+    "Easy":   (0.4,  -14, 5),
     "Medium": (0.55, -12, 4),
-    "Hard":   (0.75, -11, 3),
+    "Hard":   (0.55, -12, 4),
 }
 
 # ── Sound helpers ────────────────────────────────────────────────────────────
+# Pure stdlib — no numpy required.
+# Builds a minimal PCM WAV in memory and loads it via pygame.mixer.Sound.
 
-def _make_jump_sound():
-    """Short rising blip."""
-    pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
-    sample_rate = 44100
-    duration    = 0.12
-    n           = int(sample_rate * duration)
-    import array, math
-    buf = array.array("h")
-    for i in range(n):
-        freq = 300 + 600 * (i / n)
-        val  = int(28000 * math.sin(2 * math.pi * freq * i / sample_rate))
-        buf.append(val)
-    sound = pygame.sndarray.make_sound(
-        __import__("numpy").array(buf, dtype="int16").reshape(-1, 1)
-        if _has_numpy() else _array_to_surface(buf)
-    )
-    return sound
+import array as _array
+import struct as _struct
+import random as _random
 
-def _make_goal_sound():
-    """Quick ascending arpeggio."""
-    pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
-    sample_rate = 44100
-    duration    = 0.3
-    n           = int(sample_rate * duration)
-    import array, math
-    buf = array.array("h")
-    freqs = [523, 659, 784, 1047]
-    seg   = n // len(freqs)
-    for fi, freq in enumerate(freqs):
-        for i in range(seg):
-            val = int(26000 * math.sin(2 * math.pi * freq * i / sample_rate))
-            buf.append(val)
-    sound = pygame.sndarray.make_sound(
-        __import__("numpy").array(buf, dtype="int16").reshape(-1, 1)
-        if _has_numpy() else _array_to_surface(buf)
-    )
-    return sound
+_SAMPLE_RATE = 44100
 
-def _make_death_sound():
-    """Descending noise burst."""
-    pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
-    sample_rate = 44100
-    duration    = 0.4
-    n           = int(sample_rate * duration)
-    import array, math, random
-    buf = array.array("h")
-    for i in range(n):
-        freq = 400 - 300 * (i / n)
-        noise = random.uniform(-0.3, 0.3)
-        val = int(24000 * (math.sin(2 * math.pi * freq * i / sample_rate) + noise))
-        val = max(-32768, min(32767, val))
-        buf.append(val)
-    sound = pygame.sndarray.make_sound(
-        __import__("numpy").array(buf, dtype="int16").reshape(-1, 1)
-        if _has_numpy() else _array_to_surface(buf)
-    )
-    return sound
-
-def _has_numpy():
-    try:
-        import numpy
-        return True
-    except ImportError:
-        return False
-
-def _array_to_surface(buf):
-    """Fallback: convert array.array to a pygame Sound via a WAV bytes object."""
-    import struct, io
-    num_samples = len(buf)
-    data_bytes   = buf.tobytes()
-    sample_rate  = 44100
-    num_channels = 1
-    bits_per_sample = 16
-    byte_rate    = sample_rate * num_channels * bits_per_sample // 8
-    block_align  = num_channels * bits_per_sample // 8
-    header = struct.pack(
+def _build_wav(samples: "_array.array") -> bytes:
+    """Wrap a signed-16-bit mono sample array in a WAV header."""
+    data = samples.tobytes()
+    return _struct.pack(
         "<4sI4s4sIHHIIHH4sI",
-        b"RIFF", 36 + len(data_bytes), b"WAVE",
-        b"fmt ", 16, 1, num_channels,
-        sample_rate, byte_rate, block_align, bits_per_sample,
-        b"data", len(data_bytes),
-    )
-    return pygame.mixer.Sound(buffer=io.BytesIO(header + data_bytes).read())
+        b"RIFF", 36 + len(data), b"WAVE",
+        b"fmt ", 16,
+        1,               # PCM
+        1,               # mono
+        _SAMPLE_RATE,
+        _SAMPLE_RATE * 2,  # byte rate
+        2,               # block align
+        16,              # bits per sample
+        b"data", len(data),
+    ) + data
 
+def _make_sound_from_samples(samples: "_array.array") -> "pygame.mixer.Sound":
+    return pygame.mixer.Sound(buffer=_build_wav(samples))
+
+def _make_jump_sound() -> "pygame.mixer.Sound":
+    """Short frequency-rising blip (chirp)."""
+    n   = int(_SAMPLE_RATE * 0.12)
+    buf = _array.array("h")
+    for i in range(n):
+        freq = 300 + 700 * (i / n)        # 300 Hz → 1000 Hz
+        env  = 1.0 - (i / n) * 0.3        # slight fade
+        val  = int(28000 * env * math.sin(2 * math.pi * freq * i / _SAMPLE_RATE))
+        buf.append(max(-32768, min(32767, val)))
+    return _make_sound_from_samples(buf)
+
+def _make_goal_sound() -> "pygame.mixer.Sound":
+    """Four-note ascending arpeggio."""
+    freqs = [523, 659, 784, 1047]          # C5 E5 G5 C6
+    seg   = int(_SAMPLE_RATE * 0.07)       # ~70 ms per note
+    buf   = _array.array("h")
+    for freq in freqs:
+        for i in range(seg):
+            env = 1.0 - (i / seg) * 0.4
+            val = int(26000 * env * math.sin(2 * math.pi * freq * i / _SAMPLE_RATE))
+            buf.append(max(-32768, min(32767, val)))
+    return _make_sound_from_samples(buf)
+
+def _make_death_sound() -> "pygame.mixer.Sound":
+    """Descending tone with noise — a classic 'ouch' effect."""
+    n   = int(_SAMPLE_RATE * 0.4)
+    buf = _array.array("h")
+    for i in range(n):
+        t     = i / _SAMPLE_RATE
+        freq  = 400 - 300 * (i / n)       # 400 Hz → 100 Hz
+        noise = _random.uniform(-0.25, 0.25)
+        env   = 1.0 - (i / n) * 0.8
+        val   = int(24000 * env * (math.sin(2 * math.pi * freq * t) + noise))
+        buf.append(max(-32768, min(32767, val)))
+    return _make_sound_from_samples(buf)
 
 def _try_make_sound(fn):
-    """Return a Sound object or None if audio is unavailable."""
+    """Return a Sound object, or None if audio init failed."""
     try:
         return fn()
     except Exception:
@@ -130,10 +110,12 @@ class GameEngine:
         self.font_big   = pygame.font.SysFont("Arial", 52, bold=True)
         self.font_small = pygame.font.SysFont("Arial", 22)
 
-        # Sounds (generated procedurally; silently skipped if audio fails)
-        self.snd_jump  = _try_make_sound(_make_jump_sound)
-        self.snd_goal  = _try_make_sound(_make_goal_sound)
-        self.snd_death = _try_make_sound(_make_death_sound)
+        # Sounds are generated in a background thread so startup is instant.
+        # Each attribute starts as None and is filled in once the thread finishes.
+        self.snd_jump  = None
+        self.snd_goal  = None
+        self.snd_death = None
+        threading.Thread(target=self._load_sounds, daemon=True).start()
 
         # Start on the difficulty-select / main menu
         self.state      = self.STATE_MENU
@@ -142,6 +124,13 @@ class GameEngine:
         self._menu_selection = 1  # default index → "Medium"
 
         self._init_level()
+
+    def _load_sounds(self):
+        """Runs in a background thread — generates sounds without blocking the menu."""
+        pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+        self.snd_jump  = _try_make_sound(_make_jump_sound)
+        self.snd_goal  = _try_make_sound(_make_goal_sound)
+        self.snd_death = _try_make_sound(_make_death_sound)
 
     # ── level / player setup ─────────────────────────────────────────────────
 
